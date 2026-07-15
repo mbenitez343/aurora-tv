@@ -129,10 +129,38 @@ void app_deinit(app_t *app) {
     commons_logging_deinit();
 }
 
+/* Cadence the UI task handler runs at while streaming. Video is rendered
+ * directly by the decoder to the hardware plane (never through LVGL), and
+ * session input bypasses LVGL, so the only thing lv_task_handler drives during
+ * a stream is the overlay UI -- the display refresh period is plenty. */
+#define APP_STREAM_UI_PERIOD_MS 16
+
 void app_run_loop(app_t *app) {
     app_process_events(app);
-    lv_task_handler();
-    SDL_Delay(1);
+    if (app->session != NULL) {
+        // Streaming: keep the event pump (and thus session input, which is
+        // dispatched straight from app_event_filter) at ~1 kHz, but run the
+        // LVGL/UI task handler only at the display refresh rate. This frees
+        // CPU on this shared TV SoC for the receive/depacketizer/decode
+        // threads without adding any input latency.
+        static uint32_t last_ui_tick = 0;
+        uint32_t now = SDL_GetTicks();
+        if (now - last_ui_tick >= APP_STREAM_UI_PERIOD_MS) {
+            lv_task_handler();
+            last_ui_tick = now;
+        }
+        SDL_Delay(1);
+    } else {
+        // Idle/launcher: sleep until LVGL's next timer is due. Cap so SDL
+        // events and bus messages are still serviced regularly.
+        uint32_t delay = lv_task_handler();
+        if (delay < 1) {
+            delay = 1;
+        } else if (delay > 16) {
+            delay = 16;
+        }
+        SDL_Delay(delay);
+    }
 }
 
 static int app_event_filter(void *userdata, SDL_Event *event) {
@@ -288,6 +316,11 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
 void app_process_events(app_t *app) {
     SDL_PumpEvents();
     SDL_FilterEvents(app_event_filter, app);
+    if (app->session != NULL) {
+        // The filter pass above dispatched all pending controller-axis events
+        // and marked affected pads dirty; emit one coalesced packet each now.
+        session_handle_input_flush(app->session);
+    }
 }
 
 void app_quit_confirm() {

@@ -2,6 +2,13 @@
 #include "session_priv.h"
 
 
+void session_handle_input_flush(session_t *session) {
+    if (!session_accepting_input(session)) {
+        return;
+    }
+    stream_input_flush(&session->input);
+}
+
 bool session_handle_input_event(session_t *session, const SDL_Event *event) {
     if (!session_accepting_input(session)) {
         return false;

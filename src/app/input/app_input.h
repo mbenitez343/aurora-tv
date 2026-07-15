@@ -28,6 +28,12 @@ typedef struct app_gamepad_state_t {
     short leftStickX, leftStickY;
     short rightStickX, rightStickY;
     int buttons;
+    /* Set when an axis-motion event updated this pad's stick/trigger state but
+     * the corresponding LiSendMultiControllerEvent was deferred. SDL emits one
+     * axis event per axis, so a single stick flick fires several; coalescing
+     * them into one send per event-drain cycle cuts redundant packets (and the
+     * CPU to build them) on the depacketizer-shared main thread. */
+    bool controller_dirty;
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
     SDL_Haptic *haptic;
     int haptic_effect_id;

@@ -84,6 +84,10 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
 
 void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEvent *event);
 
+/** Emit one coalesced controller packet per gamepad whose axis state changed
+ * during the current event batch. Call once after draining SDL events. */
+void stream_input_flush(stream_input_t *input);
+
 void stream_input_handle_csensor(stream_input_t *input, const SDL_ControllerSensorEvent *event);
 
 void stream_input_handle_ctouchpad(stream_input_t *input, const SDL_ControllerTouchpadEvent *event);

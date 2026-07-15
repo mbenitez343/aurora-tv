@@ -221,6 +221,14 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
         return;
     }
 
+    // Defer the send: SDL delivers one axis event per axis, so a two-stick
+    // move fires up to four of these back-to-back. Mark dirty and let
+    // stream_input_flush() emit a single coalesced controller packet once the
+    // current event batch is drained (see app_process_events).
+    gamepad->controller_dirty = true;
+}
+
+static void stream_input_send_caxis(stream_input_t *input, app_gamepad_state_t *gamepad) {
     if (vmouse_intercepted(input, gamepad)) {
         LiSendMultiControllerEvent(gamepad->gs_id, input->input->activeGamepadMask, gamepad->buttons, 0, 0,
                                    0, 0, 0, 0);
@@ -229,6 +237,24 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
                                    gamepad->leftTrigger,
                                    gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY,
                                    gamepad->rightStickX, gamepad->rightStickY);
+    }
+}
+
+void stream_input_flush(stream_input_t *input) {
+    if (input->view_only) {
+        return;
+    }
+    // Gamepad slots are addressed by index and may have holes, so walk the full
+    // slot range and skip empty ones (same pattern as session_input_started).
+    for (int i = 0, j = app_input_get_max_gamepads(input->input); i < j; ++i) {
+        app_gamepad_state_t *gamepad = app_input_gamepad_state_by_index(input->input, i);
+        if (gamepad == NULL || !gamepad->controller_dirty) {
+            continue;
+        }
+        gamepad->controller_dirty = false;
+        if (stream_input_gamepad_sends_moonlight(input, gamepad)) {
+            stream_input_send_caxis(input, gamepad);
+        }
     }
 }
 

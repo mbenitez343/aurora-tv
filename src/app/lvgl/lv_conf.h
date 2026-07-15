@@ -60,8 +60,11 @@
 /*Default display refresh period. LVG will redraw changed ares with this period time*/
 #define LV_DISP_DEF_REFR_PERIOD     17      /*[ms]*/
 
-/*Input device read period in milliseconds*/
-#define LV_INDEV_DEF_READ_PERIOD    1      /*[ms]*/
+/*Input device read period in milliseconds.
+ *4 ms is still ~4x the display refresh period (17 ms), so UI input feel is
+ *unchanged, but the indev timer fires 4x less on the main thread (which is
+ *shared with the streaming input pump) and lets the idle loop sleep. */
+#define LV_INDEV_DEF_READ_PERIOD    4      /*[ms]*/
 
 /*Use a custom tick source that tells the elapsed time in milliseconds.
  *It removes the need to manually update the tick with `lv_tick_inc()`)*/
