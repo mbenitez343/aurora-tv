@@ -162,7 +162,12 @@ bool streaming_refresh_stats() {
         return false;
     }
     app_t *app = controller->global;
-    const struct VIDEO_STATS *dst = &vdec_summary_stats;
+    /* The depacketizer thread rewrites vdec_summary_stats every 1-2s; take a
+     * seqlock-consistent copy instead of reading the raw global (torn reads
+     * would show garbage values for a refresh). */
+    struct VIDEO_STATS stats_snap;
+    vdec_stats_snapshot(&stats_snap);
+    const struct VIDEO_STATS *dst = &stats_snap;
     const struct VIDEO_INFO *info = &vdec_stream_info;
 
     if (controller->stats_compact_label != NULL) {
