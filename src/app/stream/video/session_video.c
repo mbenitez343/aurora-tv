@@ -264,22 +264,30 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
         commons_log_warn("Session", "Video frame size %d is near initial decoder buffer (%zu)",
                          decodeUnit->fullLength, buffer_initial_size);
     }
-    size_t length = 0;
+    const unsigned char *feed_data;
+    size_t length;
     PLENTRY entry = decodeUnit->bufferList;
     if (entry != NULL && entry->next == NULL) {
-        memcpy(buffer, entry->data, entry->length);
+        // Single-NAL frame: feed the depacketizer's buffer directly. NDL/DILE
+        // consume the pointer synchronously inside SS4S_PlayerVideoFeed and do
+        // not retain it, so the reassembly copy would be pure overhead here.
+        // (Multi-entry frames still need the contiguous copy below since NDL
+        // takes a single pointer+size; scatter-gather feeding isn't supported.)
+        feed_data = (const unsigned char *) entry->data;
         length = (size_t) entry->length;
     } else {
+        length = 0;
         for (; entry != NULL; entry = entry->next) {
             memcpy(buffer + length, entry->data, entry->length);
             length += entry->length;
         }
+        feed_data = buffer;
     }
     SS4S_VideoFeedFlags flags = SS4S_VIDEO_FEED_DATA_FRAME_START | SS4S_VIDEO_FEED_DATA_FRAME_END;
     if (decodeUnit->frameType == FRAME_TYPE_IDR) {
         flags |= SS4S_VIDEO_FEED_DATA_KEYFRAME;
     }
-    SS4S_VideoFeedResult result = SS4S_PlayerVideoFeed(player, buffer, length, flags);
+    SS4S_VideoFeedResult result = SS4S_PlayerVideoFeed(player, feed_data, length, flags);
     if (result == SS4S_VIDEO_FEED_OK) {
         if (decodeUnit->frameType == FRAME_TYPE_IDR) {
             frames_since_idr = 0;
