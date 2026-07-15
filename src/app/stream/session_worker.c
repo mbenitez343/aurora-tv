@@ -8,6 +8,7 @@
 #include "input/input_gamepad.h"
 #include "stream/connection/session_connection.h"
 #include "stream/audio/session_audio.h"
+#include "stream/session_telemetry.h"
 #include "stream/video/session_video.h"
 #include "stream/adaptive_bitrate.h"
 #include "app_session.h"
@@ -106,6 +107,13 @@ int session_worker(session_t *session) {
     }
     session_set_state(session, STREAMING_STREAMING);
     bus_pushevent(USER_STREAM_OPEN, NULL, NULL);
+    telemetry_configure(app_configuration->telemetry_enabled, app_configuration->telemetry_seq_url,
+                        app_configuration->telemetry_seq_key);
+    if (telemetry_enabled()) {
+        telemetry_session_begin(server->hostname, session->config.stream.width, session->config.stream.height,
+                                session->config.stream.fps, session->config.stream.bitrate,
+                                app_configuration->hevc ? "H265" : "H264", app_configuration->hdr);
+    }
     if (session->config.auto_adjust_bitrate) {
         adaptive_bitrate_config_t abr_config = {
             .gs_client = client,
@@ -125,6 +133,10 @@ int session_worker(session_t *session) {
 
     session_set_state(session, STREAMING_DISCONNECTING);
     LiStopConnection();
+
+    // Ship this session's perf samples now that the stream is down and the
+    // link/CPU are free (async; never runs during streaming).
+    telemetry_session_end();
 
     if (session->quitapp) {
         commons_log_info("Session", "Sending app quit request ...");

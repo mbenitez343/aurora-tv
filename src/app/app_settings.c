@@ -135,6 +135,9 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     config->client_refresh_rate_x100 = 0;
     config->auto_adjust_bitrate = false;
     config->abr_mode = 0;
+    config->telemetry_enabled = false;
+    set_string(&config->telemetry_seq_url, "");
+    set_string(&config->telemetry_seq_key, "");
 
 #if defined(TARGET_WEBOS)
     settings_apply_ntsc_preset_refresh(config, config->stream.fps);
@@ -176,6 +179,11 @@ bool settings_save(app_settings_t *config) {
     ini_write_int(fp, "rotate", config->rotate);
     ini_write_bool(fp, "auto_adjust_bitrate", config->auto_adjust_bitrate);
     ini_write_int(fp, "abr_mode", config->abr_mode);
+
+    ini_write_section(fp, "telemetry");
+    ini_write_bool(fp, "enabled", config->telemetry_enabled);
+    ini_write_string(fp, "seq_url", config->telemetry_seq_url);
+    ini_write_string(fp, "seq_key", config->telemetry_seq_key);
 
     ini_write_section(fp, "host");
     ini_write_bool(fp, "sops", config->sops);
@@ -230,6 +238,8 @@ void settings_clear(app_settings_t *config) {
     free_nullable(config->ini_path);
     free_nullable(config->condb_path);
     free_nullable(config->key_dir);
+    free_nullable(config->telemetry_seq_url);
+    free_nullable(config->telemetry_seq_key);
 }
 
 #define BITRATE_300_MBPS 300000
@@ -297,6 +307,12 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         if (config->abr_mode < 0 || config->abr_mode > 2) {
             config->abr_mode = 0;
         }
+    } else if (INI_FULL_MATCH("telemetry", "enabled")) {
+        config->telemetry_enabled = INI_IS_TRUE(value);
+    } else if (INI_FULL_MATCH("telemetry", "seq_url")) {
+        set_string(&config->telemetry_seq_url, value);
+    } else if (INI_FULL_MATCH("telemetry", "seq_key")) {
+        set_string(&config->telemetry_seq_key, value);
     } else if (INI_FULL_MATCH("video", "idr_refresh_interval_sec")) {
         set_int(&config->idr_refresh_interval_sec, value);
         if (config->idr_refresh_interval_sec < 0) {

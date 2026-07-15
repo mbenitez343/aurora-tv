@@ -18,6 +18,7 @@
 #include "ss4s.h"
 #include "stream/connection/session_connection.h"
 #include "stream/session_priv.h"
+#include "stream/session_telemetry.h"
 #include "app.h"
 
 #include <SDL.h>
@@ -358,22 +359,26 @@ void vdec_stat_submit(const struct VIDEO_STATS *src, unsigned long now) {
     dst->decodedFps = (float) dst->submittedFrames / ((float) delta / 1000);
     dst->currentBitrateKbps = (uint32_t) ((dst->receivedBytes * 8) / (delta / 1000.0f));
     const bool show_stats = streaming_stats_shown();
-    if (show_stats) {
+    // Telemetry needs RTT + decoder latency every window too, not just when the
+    // overlay is visible, so compute them whenever either consumer is active.
+    const bool want_full = show_stats || telemetry_enabled();
+    if (want_full) {
         LiGetEstimatedRttInfo(&dst->rtt, &dst->rttVariance);
-    }
-    if (!show_stats) {
-        vdec_stats_write_end();
-        return;
-    }
-    int latencyUs = 0;
-    if (SS4S_PlayerGetVideoLatency(player, 0, &latencyUs)) {
-        dst->avgDecoderLatency = (float) latencyUs / 1000.0f;
-        vdec_stream_info.has_decoder_latency = true;
-    } else {
-        dst->avgDecoderLatency = 0;
+        int latencyUs = 0;
+        if (SS4S_PlayerGetVideoLatency(player, 0, &latencyUs)) {
+            dst->avgDecoderLatency = (float) latencyUs / 1000.0f;
+            vdec_stream_info.has_decoder_latency = true;
+        } else {
+            dst->avgDecoderLatency = 0;
+        }
     }
     vdec_stats_write_end();
-    app_bus_post(session->app, (bus_actionfunc) streaming_refresh_stats, NULL);
+    if (telemetry_enabled()) {
+        telemetry_sample(dst);
+    }
+    if (show_stats) {
+        app_bus_post(session->app, (bus_actionfunc) streaming_refresh_stats, NULL);
+    }
 }
 
 void stream_info_parse_size(PDECODE_UNIT decodeUnit, struct VIDEO_INFO *info) {

@@ -233,7 +233,7 @@ elseif (OS_DARWIN)
 endif ()
 
 target_include_directories(moonlight-lib SYSTEM PUBLIC ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS}
-        ${FREETYPE_INCLUDE_DIRS} ${INIH_INCLUDE_DIRS})
+        ${FREETYPE_INCLUDE_DIRS} ${INIH_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS})
 target_link_libraries(moonlight-lib PUBLIC
         m ${CMAKE_DL_LIBS} Threads::Threads ${SDL2_LIBRARIES} ${SDL2_IMAGE_LIBRARIES}
         moonlight-common-c gamestream lvgl ${INIH_LIBRARIES} ${CURL_LIBRARIES}

@@ -63,6 +63,11 @@ typedef struct app_settings_t {
     int client_refresh_rate_x100;
     bool auto_adjust_bitrate;
     int abr_mode;
+    /** Opt-in per-session performance telemetry shipped to a Seq instance after each
+     * session. The API key is stored on-device only and must never be committed. */
+    bool telemetry_enabled;
+    char *telemetry_seq_url;
+    char *telemetry_seq_key;
     char *conf_dir;
     char *ini_path;
     char *condb_path;
