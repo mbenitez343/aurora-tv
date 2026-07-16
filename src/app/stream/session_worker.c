@@ -13,6 +13,36 @@
 #include "stream/adaptive_bitrate.h"
 #include "app_session.h"
 #include "backend/pcmanager/worker/worker.h"
+#include "app_settings.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+
+static void session_apply_smooth_pacing_env(const session_t *session) {
+#if TARGET_WEBOS
+    const app_settings_t *cfg = app_configuration;
+    bool smooth = cfg != NULL ? cfg->smooth_frame_pacing : true;
+    const char *smooth_val = smooth ? "1" : "0";
+    /* Shared names for SMP + NDL; keep NDL_* aliases for older module builds. */
+    setenv("SS4S_SMOOTH_PACING", smooth_val, 1);
+    setenv("SS4S_NDL_SMOOTH_PACING", smooth_val, 1);
+
+    int x100 = session->config.stream.clientRefreshRateX100;
+    if (x100 > 0) {
+        /* interval_us = 1e6 * 100 / x100  (e.g. 11988 → ~8341 µs) */
+        long interval_us = (100000000L + (x100 / 2)) / x100;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%ld", interval_us);
+        setenv("SS4S_SMOOTH_PACING_INTERVAL_US", buf, 1);
+        setenv("SS4S_NDL_PACING_INTERVAL_US", buf, 1);
+    } else {
+        unsetenv("SS4S_SMOOTH_PACING_INTERVAL_US");
+        unsetenv("SS4S_NDL_PACING_INTERVAL_US");
+    }
+#else
+    (void) session;
+#endif
+}
 
 int session_worker(session_t *session) {
     app_t *app = session->app;
@@ -74,6 +104,7 @@ int session_worker(session_t *session) {
     SS4S_PlayerSetViewportSize(session->player, app->ui.width, app->ui.height);
     SS4S_PlayerSetUserdata(session->player, app);
 
+    session_apply_smooth_pacing_env(session);
     session_video_prepare_stream();
 
     int startResult = LiStartConnection(&server->serverInfo, &session->config.stream,

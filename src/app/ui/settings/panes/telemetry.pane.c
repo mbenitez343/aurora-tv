@@ -58,6 +58,9 @@ static lv_obj_t *create_text_field(lv_obj_t *parent, const char *placeholder, co
 static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     (void) self;
     lv_obj_t *view = pref_pane_container(container);
+    lv_obj_set_layout(view, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(view, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(view, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     pref_header(view, locstr("Performance telemetry"));
     pref_desc_label(view, locstr("Sends this session's performance stats to your Seq instance after the stream "

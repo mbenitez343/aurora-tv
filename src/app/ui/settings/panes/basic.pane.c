@@ -58,6 +58,8 @@ static void on_abr_changed(lv_event_t *e);
 
 static void on_abr_mode_changed(lv_event_t *e);
 
+static void on_ntsc_refresh_changed(lv_event_t *e);
+
 static void refresh_profile_dropdown(basic_pane_t *pane);
 
 static void on_new_profile_clicked(lv_event_t *e);
@@ -145,6 +147,15 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
                                                &app_configuration->client_refresh_rate_x100);
     lv_obj_set_flex_grow(fps_dropdown, 1);
     lv_obj_add_event_cb(fps_dropdown, on_res_fps_updated, LV_EVENT_VALUE_CHANGED, self);
+
+    lv_obj_t *ntsc_checkbox = pref_checkbox(view, locstr("Use NTSC refresh (59.94 / 119.88 Hz)"),
+                                            &app_configuration->use_ntsc_refresh, false);
+    lv_obj_add_event_cb(ntsc_checkbox, on_ntsc_refresh_changed, LV_EVENT_VALUE_CHANGED, self);
+    pref_desc_label(view,
+                    locstr("When enabled, 60/120 FPS presets use fractional NTSC pacing (59.94/119.88). "
+                           "When disabled, presets use integer 60/120 like Moonlight mobile. "
+                           "Custom FPS still allows any fractional rate."),
+                    false);
 
     pref_desc_label(view,
                     locstr("Tip: choose Custom FPS to enter a fractional refresh rate (e.g. 119.94 for VRR game "
@@ -234,6 +245,12 @@ static void on_res_fps_updated(lv_event_t *e) {
     }
     update_bitrate_label(pane);
     update_bitrate_hint(pane);
+}
+
+static void on_ntsc_refresh_changed(lv_event_t *e) {
+    basic_pane_t *pane = lv_event_get_user_data(e);
+    pane->parent->needs_stream_reconnect = true;
+    settings_apply_ntsc_preset_refresh(app_configuration, app_configuration->stream.fps);
 }
 
 static void on_fullscreen_updated(lv_event_t *e) {

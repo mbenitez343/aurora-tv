@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "stream/session.h"
@@ -24,10 +25,9 @@
 #include <SDL.h>
 #include <assert.h>
 
-// Starting capacity for the decode-unit reassembly buffer. Grows on
-// demand to accommodate larger frames (e.g. 4K IDR frames at high
-// bitrate routinely exceed 2 MB), capped to keep a malformed stream
-// from exhausting memory.
+/* Starting capacity for the decode-unit reassembly buffer. Grows on
+ * demand to accommodate larger frames (e.g. 4K IDR frames at high
+ * bitrate), capped to keep a malformed stream from exhausting memory. */
 #define DECODER_BUFFER_MAX_SIZE (32 * 1024 * 1024)
 
 /** Slices hint for pipeline decode while later slices still arrive (high bitrate / 120 Hz). */
@@ -58,26 +58,24 @@ static unsigned char *buffer = NULL;
 static size_t buffer_size = 0;
 static size_t buffer_initial_size = 0;
 static int lastFrameNumber;
-// Set when SS4S_PlayerVideoFeed returns NOT_READY (decoder is in an
-// exclusive op like HDR toggle or resolution change). Consumed on the
-// next successful Feed: we ask Limelight for one IDR so the decoder
-// can resync from a known-good keyframe instead of decoding the next
-// P-frame against a discontinuity.
+/* Set when SS4S_PlayerVideoFeed returns NOT_READY. Consumed on the next
+ * successful Feed: ask Limelight for one IDR so the decoder can resync. */
 static bool need_idr_on_resume = false;
 static struct VIDEO_STATS vdec_temp_stats;
 static int vdec_stream_format = 0;
 static bool vdec_warned_near_buffer_limit;
 VIDEO_STATS vdec_summary_stats;
-/* Seqlock for vdec_summary_stats: odd while vdec_stat_submit is mid-write.
- * Single writer (session thread); cross-thread readers use vdec_stats_snapshot. */
+/* Seqlock for vdec_summary_stats: odd while vdec_stat_submit is mid-write. */
 static unsigned vdec_stats_seq;
 VIDEO_INFO vdec_stream_info;
 
 static int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags);
 
-static void vdec_delegate_cleanup();
+static void vdec_delegate_cleanup(void);
 
 static int vdec_delegate_submit(PDECODE_UNIT decodeUnit);
+
+static int vdec_finish_feed(SS4S_VideoFeedResult result, PDECODE_UNIT decodeUnit);
 
 static void vdec_stat_submit(const struct VIDEO_STATS *src, unsigned long now);
 
@@ -179,6 +177,8 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
             break;
         default: {
             commons_log_error("Session", "Unsupported codec %s", vdec_stream_info.format);
+            free(buffer);
+            buffer = NULL;
             return CALLBACKS_SESSION_ERROR_VDEC_UNSUPPORTED;
         }
     }
@@ -193,13 +193,17 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
             return 0;
         }
         case SS4S_VIDEO_OPEN_UNSUPPORTED_CODEC:
+            free(buffer);
+            buffer = NULL;
             return CALLBACKS_SESSION_ERROR_VDEC_UNSUPPORTED;
         default:
+            free(buffer);
+            buffer = NULL;
             return CALLBACKS_SESSION_ERROR_VDEC_ERROR;
     }
 }
 
-void vdec_delegate_cleanup() {
+void vdec_delegate_cleanup(void) {
     assert(player != NULL);
     free(buffer);
     buffer = NULL;
@@ -207,6 +211,45 @@ void vdec_delegate_cleanup() {
     buffer_initial_size = 0;
     SS4S_PlayerVideoClose(player);
     session = NULL;
+}
+
+static int vdec_finish_feed(SS4S_VideoFeedResult result, PDECODE_UNIT decodeUnit) {
+    if (result == SS4S_VIDEO_FEED_OK) {
+        if (decodeUnit->frameType == FRAME_TYPE_IDR) {
+            frames_since_idr = 0;
+        } else {
+            frames_since_idr++;
+        }
+        const int idr_ms = app_configuration ? app_configuration->idr_refresh_interval_ms : 0;
+        const bool hevc_stream = vdec_stream_format == VIDEO_FORMAT_H265 ||
+                                 vdec_stream_format == VIDEO_FORMAT_H265_MAIN10;
+        if (hevc_stream && idr_ms >= 500 && vdec_stream_target_fps > 0) {
+            const int frames_threshold = (vdec_stream_target_fps * idr_ms + 500) / 1000;
+            if (frames_threshold > 0 && frames_since_idr >= frames_threshold) {
+                LiRequestIdrFrame();
+                frames_since_idr = 0;
+            }
+        }
+        if (vdec_stream_info.width == 0 || vdec_stream_info.height == 0) {
+            stream_info_parse_size(decodeUnit, &vdec_stream_info);
+        }
+        vdec_temp_stats.totalSubmitTime += LiGetMillis() - (unsigned long) (decodeUnit->enqueueTimeUs / 1000);
+        vdec_temp_stats.submittedFrames++;
+        if (need_idr_on_resume) {
+            need_idr_on_resume = false;
+            return DR_NEED_IDR;
+        }
+        return DR_OK;
+    } else if (result == SS4S_VIDEO_FEED_REQUEST_KEYFRAME) {
+        return DR_NEED_IDR;
+    } else if (result == SS4S_VIDEO_FEED_NOT_READY) {
+        need_idr_on_resume = true;
+        return DR_OK;
+    } else {
+        commons_log_error("Session", "Video feed error %d", result);
+        session_interrupt(session, false, STREAMING_INTERRUPT_DECODER);
+        return DR_OK;
+    }
 }
 
 int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
@@ -238,7 +281,6 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
         vdec_temp_stats.measurementStartTimestamp = ticksms;
         lastFrameNumber = decodeUnit->frameNumber;
     } else {
-        // Any frame number greater than m_LastFrameNumber + 1 represents a dropped frame
         vdec_temp_stats.networkDroppedFrames += decodeUnit->frameNumber - (lastFrameNumber + 1);
         vdec_temp_stats.totalFrames += decodeUnit->frameNumber - (lastFrameNumber + 1);
         lastFrameNumber = decodeUnit->frameNumber;
@@ -246,8 +288,6 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
     unsigned stats_window_ms = streaming_stats_shown() ? 1000u : 2000u;
     if (ticksms - vdec_temp_stats.measurementStartTimestamp > stats_window_ms) {
         vdec_stat_submit(&vdec_temp_stats, ticksms);
-
-        // Move this window into the last window slot and clear it for next window
         memset(&vdec_temp_stats, 0, sizeof(vdec_temp_stats));
         vdec_temp_stats.measurementStartTimestamp = ticksms;
     }
@@ -288,41 +328,11 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
     if (decodeUnit->frameType == FRAME_TYPE_IDR) {
         flags |= SS4S_VIDEO_FEED_DATA_KEYFRAME;
     }
-    SS4S_VideoFeedResult result = SS4S_PlayerVideoFeed(player, feed_data, length, flags);
-    if (result == SS4S_VIDEO_FEED_OK) {
-        if (decodeUnit->frameType == FRAME_TYPE_IDR) {
-            frames_since_idr = 0;
-        } else {
-            frames_since_idr++;
-        }
-        const int idr_interval = app_configuration ? app_configuration->idr_refresh_interval_sec : 0;
-        const bool hevc_stream = vdec_stream_format == VIDEO_FORMAT_H265 ||
-                                 vdec_stream_format == VIDEO_FORMAT_H265_MAIN10;
-        if (hevc_stream && idr_interval >= 2 && vdec_stream_target_fps > 0 &&
-            frames_since_idr >= vdec_stream_target_fps * idr_interval) {
-            LiRequestIdrFrame();
-            frames_since_idr = 0;
-        }
-        if (vdec_stream_info.width == 0 || vdec_stream_info.height == 0) {
-            stream_info_parse_size(decodeUnit, &vdec_stream_info);
-        }
-        vdec_temp_stats.totalSubmitTime += LiGetMillis() - (unsigned long) (decodeUnit->enqueueTimeUs / 1000);
-        vdec_temp_stats.submittedFrames++;
-        if (need_idr_on_resume) {
-            need_idr_on_resume = false;
-            return DR_NEED_IDR;
-        }
-        return DR_OK;
-    } else if (result == SS4S_VIDEO_FEED_REQUEST_KEYFRAME) {
-        return DR_NEED_IDR;
-    } else if (result == SS4S_VIDEO_FEED_NOT_READY) {
-        need_idr_on_resume = true;
-        return DR_OK;
-    } else {
-        commons_log_error("Session", "Video feed error %d", result);
-        session_interrupt(session, false, STREAMING_INTERRUPT_DECODER);
-        return DR_OK;
-    }
+    const int64_t pts_us = decodeUnit->presentationTimeUs > 0
+                                   ? (int64_t) decodeUnit->presentationTimeUs
+                                   : (int64_t) -1;
+    SS4S_VideoFeedResult result = SS4S_PlayerVideoFeedWithPTS(player, feed_data, length, flags, pts_us);
+    return vdec_finish_feed(result, decodeUnit);
 }
 
 static inline void vdec_stats_write_begin(void) {
@@ -364,9 +374,9 @@ void vdec_stat_submit(const struct VIDEO_STATS *src, unsigned long now) {
     const bool want_full = show_stats || telemetry_enabled();
     if (want_full) {
         LiGetEstimatedRttInfo(&dst->rtt, &dst->rttVariance);
-        int latencyUs = 0;
-        if (SS4S_PlayerGetVideoLatency(player, 0, &latencyUs)) {
-            dst->avgDecoderLatency = (float) latencyUs / 1000.0f;
+        int latencyUS = 0;
+        if (SS4S_PlayerGetVideoLatency(player, 0, &latencyUS)) {
+            dst->avgDecoderLatency = (float) latencyUS / 1000.0f;
             vdec_stream_info.has_decoder_latency = true;
         } else {
             dst->avgDecoderLatency = 0;

@@ -39,7 +39,29 @@ void settings_reconcile_refresh_rate(app_settings_t *config) {
 #if defined(TARGET_WEBOS)
     int ntsc = settings_ntsc_refresh_rate_x100_for_fps(config->stream.fps);
     if (ntsc > 0) {
-        config->client_refresh_rate_x100 = ntsc;
+        if (config->use_ntsc_refresh) {
+            /* Auto NTSC for presets; keep a user Custom FPS fractional rate if present. */
+            if (config->client_refresh_rate_x100 == 0 ||
+                config->client_refresh_rate_x100 == ntsc) {
+                config->client_refresh_rate_x100 = ntsc;
+                return;
+            }
+            int implied = (config->client_refresh_rate_x100 + 50) / 100;
+            if (implied != config->stream.fps) {
+                config->client_refresh_rate_x100 = ntsc;
+            }
+            return;
+        }
+        /* Integer presets: clear auto-NTSC; keep a distinct Custom FPS fractional rate. */
+        if (config->client_refresh_rate_x100 == 0 ||
+            config->client_refresh_rate_x100 == ntsc) {
+            config->client_refresh_rate_x100 = 0;
+            return;
+        }
+        int implied = (config->client_refresh_rate_x100 + 50) / 100;
+        if (implied != config->stream.fps) {
+            config->client_refresh_rate_x100 = 0;
+        }
         return;
     }
 #endif
@@ -77,7 +99,16 @@ int settings_ntsc_refresh_rate_x100_for_fps(int nominal_fps)
 void settings_apply_ntsc_preset_refresh(app_settings_t *config, int nominal_fps)
 {
 #if defined(TARGET_WEBOS)
+    if (!config) {
+        return;
+    }
     (void) nominal_fps;
+    int ntsc = settings_ntsc_refresh_rate_x100_for_fps(config->stream.fps);
+    if (ntsc > 0) {
+        /* Preset selection / NTSC checkbox: force auto NTSC or integer (clears Custom). */
+        config->client_refresh_rate_x100 = config->use_ntsc_refresh ? ntsc : 0;
+        return;
+    }
     settings_reconcile_refresh_rate(config);
 #else
     (void) config;
@@ -128,11 +159,17 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     config->hdr = false;
     config->force_full_color_range = false;
     config->hevc = true;
-    config->idr_refresh_interval_sec = 0;
+    config->idr_refresh_interval_ms = 0;
     config->show_stats_on_start = false;
     config->show_stats_compact = false;
     config->stick_deadzone = 7;
     config->client_refresh_rate_x100 = 0;
+    config->use_ntsc_refresh = false;
+#if defined(TARGET_WEBOS)
+    config->smooth_frame_pacing = true;
+#else
+    config->smooth_frame_pacing = false;
+#endif
     config->auto_adjust_bitrate = false;
     config->abr_mode = 0;
     config->telemetry_enabled = false;
@@ -207,10 +244,12 @@ bool settings_save(app_settings_t *config) {
     ini_write_bool(fp, "hdr", config->hdr);
     ini_write_bool(fp, "force_full_color_range", config->force_full_color_range);
     ini_write_bool(fp, "hevc", config->hevc);
-    ini_write_int(fp, "idr_refresh_interval_sec", config->idr_refresh_interval_sec);
+    ini_write_int(fp, "idr_refresh_interval_ms", config->idr_refresh_interval_ms);
     ini_write_bool(fp, "show_stats_on_start", config->show_stats_on_start);
     ini_write_bool(fp, "show_stats_compact", config->show_stats_compact);
     ini_write_int(fp, "client_refresh_rate_x100", config->client_refresh_rate_x100);
+    ini_write_bool(fp, "use_ntsc_refresh", config->use_ntsc_refresh);
+    ini_write_bool(fp, "smooth_frame_pacing", config->smooth_frame_pacing);
 
     ini_write_section(fp, "audio");
     ini_write_string(fp, "backend", config->audio_backend);
@@ -313,14 +352,33 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         set_string(&config->telemetry_seq_url, value);
     } else if (INI_FULL_MATCH("telemetry", "seq_key")) {
         set_string(&config->telemetry_seq_key, value);
+    } else if (INI_FULL_MATCH("video", "idr_refresh_interval_ms")) {
+        set_int(&config->idr_refresh_interval_ms, value);
+        if (config->idr_refresh_interval_ms < 0) {
+            config->idr_refresh_interval_ms = 0;
+        } else if (config->idr_refresh_interval_ms > 0 && config->idr_refresh_interval_ms < 500) {
+            config->idr_refresh_interval_ms = 500;
+        } else if (config->idr_refresh_interval_ms > 60000) {
+            config->idr_refresh_interval_ms = 60000;
+        } else if (config->idr_refresh_interval_ms > 0) {
+            config->idr_refresh_interval_ms = ((config->idr_refresh_interval_ms + 250) / 500) * 500;
+            if (config->idr_refresh_interval_ms < 500) {
+                config->idr_refresh_interval_ms = 500;
+            }
+        }
     } else if (INI_FULL_MATCH("video", "idr_refresh_interval_sec")) {
-        set_int(&config->idr_refresh_interval_sec, value);
-        if (config->idr_refresh_interval_sec < 0) {
-            config->idr_refresh_interval_sec = 0;
-        } else if (config->idr_refresh_interval_sec > 60) {
-            config->idr_refresh_interval_sec = 60;
-        } else if (config->idr_refresh_interval_sec == 1) {
-            config->idr_refresh_interval_sec = 2;
+        /* Legacy seconds key → milliseconds */
+        int sec = 0;
+        set_int(&sec, value);
+        if (sec < 0) {
+            config->idr_refresh_interval_ms = 0;
+        } else if (sec == 0) {
+            config->idr_refresh_interval_ms = 0;
+        } else {
+            if (sec > 60) {
+                sec = 60;
+            }
+            config->idr_refresh_interval_ms = sec * 1000;
         }
     } else if (INI_NAME_MATCH("hevc")) {
         config->hevc = INI_IS_TRUE(value);
@@ -341,6 +399,10 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         } else if (config->client_refresh_rate_x100 > 24000) {
             config->client_refresh_rate_x100 = 24000;
         }
+    } else if (INI_FULL_MATCH("video", "use_ntsc_refresh")) {
+        config->use_ntsc_refresh = INI_IS_TRUE(value);
+    } else if (INI_FULL_MATCH("video", "smooth_frame_pacing")) {
+        config->smooth_frame_pacing = INI_IS_TRUE(value);
     } else if (INI_FULL_MATCH("video", "force_full_color_range")) {
         config->force_full_color_range = INI_IS_TRUE(value);
     } else if (INI_NAME_MATCH("surround")) {

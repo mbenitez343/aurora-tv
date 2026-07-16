@@ -51,8 +51,8 @@ typedef struct app_settings_t {
     bool hdr;   /* HDR10 (PQ) over HEVC Main10 when host and decoder support it */
     bool force_full_color_range; /* SDR only: request full-range YUV (0-255) from host. No effect when HDR is on. */
     bool hevc;
-    /** Periodic HEVC IDR refresh interval in seconds (0 = off, min 2 when enabled). */
-    int idr_refresh_interval_sec;
+    /** Periodic HEVC IDR refresh interval in ms (0 = off, min 500 when enabled, step 500). */
+    int idr_refresh_interval_ms;
     bool show_stats_on_start;
     bool show_stats_compact;
     int stick_deadzone;
@@ -61,6 +61,17 @@ typedef struct app_settings_t {
      * 0 = omit (host default frame pacing).
      */
     int client_refresh_rate_x100;
+    /**
+     * When true on webOS, map preset 30/60/120/240 fps to NTSC fractional rates
+     * (e.g. 120 → 11988). When false, presets use integer fps (client_refresh_rate_x100 = 0).
+     */
+    bool use_ntsc_refresh;
+    /**
+     * webOS NDL/SMP: stamp video PTS on a virtual frame grid instead of wall-clock feed time.
+     * Reduces pan hitching when encode/arrival jitter is high (default true).
+     * When enabled, host presentationTimeUs is mapped into the player PTS when available.
+     */
+    bool smooth_frame_pacing;
     bool auto_adjust_bitrate;
     int abr_mode;
     /** Opt-in per-session performance telemetry shipped to a Seq instance after each
@@ -109,13 +120,13 @@ bool settings_save(app_settings_t *config);
 /** Keep stream.fps aligned with client_refresh_rate_x100 when a fractional rate is set. */
 void settings_sync_refresh_rate(app_settings_t *config);
 
-/** webOS: apply NTSC x100 only for 30/60/120/240; drop stale x100 for 144/90/etc. */
+/** webOS: apply NTSC x100 only when use_ntsc_refresh for 30/60/120/240; else clear for presets. */
 void settings_reconcile_refresh_rate(app_settings_t *config);
 
 /** NTSC refresh rate (Hz × 100) for a nominal FPS preset, or 0 if not mapped (e.g. 144). */
 int settings_ntsc_refresh_rate_x100_for_fps(int nominal_fps);
 
-/** On webOS, set client_refresh_rate_x100 from a preset FPS (60→5994, 120→11988, …). */
+/** On webOS, set or clear client_refresh_rate_x100 for a preset FPS based on use_ntsc_refresh. */
 void settings_apply_ntsc_preset_refresh(app_settings_t *config, int nominal_fps);
 
 void settings_clear(app_settings_t *config);
